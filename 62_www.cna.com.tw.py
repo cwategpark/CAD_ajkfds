@@ -24,6 +24,9 @@ DATA_DIR = "data"
 if not os.path.exists(DATA_DIR):
     os.makedirs(DATA_DIR)
 
+# 去重文件路径
+TITLE_HASH_FILE = "crawled_title_hashes.txt"
+
 # 全局变量存储结果
 grouped_articles = {}  # 按频道和日期分组的文章
 processed_urls = 0
@@ -31,6 +34,36 @@ success_count = 0
 error_count = 0
 last_save_time = time.time()  # 上次保存时间
 SAVE_INTERVAL = 20 * 60  # 20分钟保存一次（秒）
+crawled_title_hashes = set()  # 存储已爬取标题的哈希值
+
+
+def load_crawled_hashes():
+    """加载已爬取标题的哈希值"""
+    if not os.path.exists(TITLE_HASH_FILE):
+        return set()
+
+    try:
+        with open(TITLE_HASH_FILE, 'r', encoding='utf-8') as f:
+            return set(line.strip() for line in f if line.strip())
+    except Exception as e:
+        print(f"加载去重文件失败: {str(e)}")
+        return set()
+
+
+def save_crawled_hash(title_hash):
+    """保存新的标题哈希值到文件"""
+    try:
+        with open(TITLE_HASH_FILE, 'a', encoding='utf-8') as f:
+            f.write(title_hash + '\n')
+        return True
+    except Exception as e:
+        print(f"保存去重哈希失败: {str(e)}")
+        return False
+
+
+def generate_title_hash(title):
+    """生成标题的哈希标识（MD5）"""
+    return hashlib.md5(title.encode('utf-8')).hexdigest()
 
 
 def generate_dates():
@@ -216,6 +249,7 @@ def check_and_save_grouped():
 def crawl_articles():
     """主爬虫函数"""
     global grouped_articles, processed_urls, success_count, error_count, last_save_time
+    global crawled_title_hashes
 
     try:
         dates = list(generate_dates())
@@ -226,6 +260,7 @@ def crawl_articles():
         print(f"爬取日期范围: {START_DATE} 到 {END_DATE}")
         print(f"总天数: {total_days}, 总URL数: {total_urls}")
         print(f"分组保存间隔: {SAVE_INTERVAL / 60} 分钟")
+        print(f"已加载去重记录: {len(crawled_title_hashes)} 条")
 
         for day_idx, date_str in enumerate(dates):
             print(f"\n{'=' * 60}")
@@ -288,6 +323,13 @@ def crawl_articles():
                     title_text_display = title_text_content[:50] + "..." if len(
                         title_text_content) > 50 else title_text_content
 
+                    # 检查标题是否已爬取过
+                    title_hash = generate_title_hash(title_text_content)
+                    if title_hash in crawled_title_hashes:
+                        print(f"  × 重复文章: {title_text_display} - 跳过")
+                        error_count += 1
+                        continue
+
                     # 提取内容
                     content_div = soup.find('div', class_='paragraph')
                     if not content_div:
@@ -331,6 +373,10 @@ def crawl_articles():
                         grouped_articles[group_key] = []
                     grouped_articles[group_key].append(article_data)
 
+                    # 记录已爬取标题
+                    crawled_title_hashes.add(title_hash)
+                    save_crawled_hash(title_hash)
+
                     date_count += 1
                     success_count += 1
                     print(f"  ✓ 找到文章: {category} - {title_text_display}")
@@ -368,12 +414,19 @@ def crawl_articles():
 
 # 执行爬虫
 if __name__ == "__main__":
+    # 导入hashlib用于生成标题哈希
+    import hashlib
+
+    # 加载已爬取的标题哈希
+    crawled_title_hashes = load_crawled_hashes()
+
     # 显示当前日期信息
     current_date = datetime.datetime.now().strftime("%Y-%m-%d")
     print(f"爬虫启动时间: {current_date}")
     print(f"开始爬取: {START_DATE} 到 {END_DATE}")
     print(f"目标分类: {', '.join(VALID_CATEGORIES)}")
     print(f"数据保存目录: {os.path.abspath(DATA_DIR)}")
+    print(f"已加载去重记录: {len(crawled_title_hashes)} 条")
     print("=" * 60)
 
     start_time = datetime.datetime.now()
@@ -390,6 +443,7 @@ if __name__ == "__main__":
     print(f"处理URL总数: {processed_urls}")
     print(f"成功文章数: {success_count}")
     print(f"错误/跳过数: {error_count}")
+    print(f"新增去重记录: {len(crawled_title_hashes)} 条")
     if processed_urls > 0:
         success_rate = success_count / processed_urls * 100
         print(f"成功率: {success_rate:.1f}%")
