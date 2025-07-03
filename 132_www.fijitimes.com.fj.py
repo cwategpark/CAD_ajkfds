@@ -108,57 +108,62 @@ def crawl_article(url):
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
     }
-    try:
-        response = requests.get(url, headers=headers, timeout=15)
-        response.raise_for_status()
-        soup = BeautifulSoup(response.text, 'html.parser')
-        title_elem = soup.find('h1', class_='fijitimes_title wp-block-post-title has-x-large-font-size')
-        if not (isinstance(title_elem, Tag)):
-            print(f"  × 未找到标题元素")
-            return None, None, None
-        title_text = title_elem.get_text(strip=True)
-        content_elem = soup.find('div', class_='entry-content post_content wp-block-post-content is-layout-flow wp-block-post-content-is-layout-flow')
-        if not (isinstance(content_elem, Tag)):
-            print(f"  × 未找到内容元素")
-            return None, None, None
-        content = '\n'.join([p.get_text(strip=True) for p in content_elem.find_all('p') if isinstance(p, Tag) and p.get_text(strip=True)])
-        info_elem = soup.find('div', class_='fijitimes_post__info')
-        publish_time, authors = '', ''
-        if isinstance(info_elem, Tag):
-            spans = [span for span in info_elem.find_all('span') if isinstance(span, Tag)]
-            if len(spans) >= 2:
-                publish_time = spans[1].get_text(strip=True)
-            if len(spans) >= 4:
-                authors = spans[3].get_text(strip=True)
-        if authors.lower().startswith('by '):
-            authors = authors[3:].strip()
-        # category 字段保留原逻辑用于json内容，但文件名和文件夹用channel_name
-        category = "经济"
-        if '/local-news/' in url:
-            category = "当地新闻"
-        elif '/world/' in url:
-            category = "国际新闻"
-        elif '/business/' in url:
+    for attempt in range(3):
+        try:
+            response = requests.get(url, headers=headers, timeout=15, verify=False)
+            response.raise_for_status()
+            soup = BeautifulSoup(response.text, 'html.parser')
+            title_elem = soup.find('h1', class_='fijitimes_title wp-block-post-title has-x-large-font-size')
+            if not (isinstance(title_elem, Tag)):
+                print(f"  × 未找到标题元素")
+                return None, None, None
+            title_text = title_elem.get_text(strip=True)
+            content_elem = soup.find('div', class_='entry-content post_content wp-block-post-content is-layout-flow wp-block-post-content-is-layout-flow')
+            if not (isinstance(content_elem, Tag)):
+                print(f"  × 未找到内容元素")
+                return None, None, None
+            content = '\n'.join([p.get_text(strip=True) for p in content_elem.find_all('p') if isinstance(p, Tag) and p.get_text(strip=True)])
+            info_elem = soup.find('div', class_='fijitimes_post__info')
+            publish_time, authors = '', ''
+            if isinstance(info_elem, Tag):
+                spans = [span for span in info_elem.find_all('span') if isinstance(span, Tag)]
+                if len(spans) >= 2:
+                    publish_time = spans[1].get_text(strip=True)
+                if len(spans) >= 4:
+                    authors = spans[3].get_text(strip=True)
+            if authors.lower().startswith('by '):
+                authors = authors[3:].strip()
             category = "经济"
-        article_data = {
-            "title": title_text,
-            "content": content,
-            "sources": {
-                "current_site": "每日时报",
-                "current_siteurl": "www.fijitimes.com.fj",
-                "origin_url": url
-            },
-            "metadata": {
-                "publish_time": safe_publish_time(publish_time),
-                "authors": authors,
-                "category": category
-            },
-            "crawlingtime": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        }
-        return article_data, title_text, publish_time
-    except Exception as e:
-        print(f"  × 爬取文章失败 {url}: {str(e)}")
-        return None, None, None
+            if '/local-news/' in url:
+                category = "当地新闻"
+            elif '/world/' in url:
+                category = "国际新闻"
+            elif '/business/' in url:
+                category = "经济"
+            article_data = {
+                "title": title_text,
+                "content": content,
+                "sources": {
+                    "current_site": "每日时报",
+                    "current_siteurl": "www.fijitimes.com.fj",
+                    "origin_url": url
+                },
+                "metadata": {
+                    "publish_time": safe_publish_time(publish_time),
+                    "authors": authors,
+                    "category": category
+                },
+                "crawlingtime": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            }
+            return article_data, title_text, publish_time
+        except requests.exceptions.SSLError as e:
+            print(f"  × SSL错误，重试第{attempt+1}次: {url}")
+            sleep(2)
+            continue
+        except Exception as e:
+            print(f"  × 爬取文章失败 {url}: {str(e)}")
+            return None, None, None
+    return None, None, None
 
 def crawl_channel(channel_url):
     print(f"\n🌐 启动无头浏览器加载频道: {channel_url}")
@@ -201,8 +206,15 @@ def crawl_channel(channel_url):
     driver.execute_script("Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]})")
     driver.execute_script("Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']})")
     
-    driver.get(channel_url)
-    
+    try:
+        driver.get(channel_url)
+    except Exception as e:
+        print(f"⚠️ driver.get({channel_url}) 失败: {e}")
+        try:
+            driver.quit()
+        except:
+            pass
+        return
     # 等待页面完全加载
     sleep(3)
     
@@ -223,51 +235,65 @@ def crawl_channel(channel_url):
     
     # 用于中断保存的变量
     all_articles = []
+    no_loadmore_count = 0  # 连续未检测到Load more按钮的计数器
+    no_loadmore_threshold = 15
     try:
-        try:
-            while click_count < max_clicks:
-                print(f"\n--- 第 {click_count + 1} 次加载 ---")
-                html = driver.page_source
-                soup = BeautifulSoup(html, 'html.parser')
-                links = soup.find_all('a', class_='ps-no-underline ps-leading-tight ps-text-blockBlack')
-                urls = []
-                for link in links:
-                    if isinstance(link, Tag):
-                        href = link.get('href')
-                        if isinstance(href, str) and href.startswith('http'):
-                            urls.append(href)
-                urls = list(set(urls))
-                new_urls = [u for u in urls if u not in seen_links]
-                print(f'本轮新发现 {len(new_urls)} 个链接')
-                # 批量爬取本轮所有新链接
-                articles_this_round = []
-                for url in new_urls:
-                    seen_links.add(url)
-                    article_data, title_text, publish_time = crawl_article(url)
-                    if not article_data or not title_text:
-                        continue
-                    if title_text in titles_set:
-                        print(f'  × 已爬取过: {title_text}')
-                        continue
-                    articles_this_round.append(article_data)
-                    save_title(title_text)
-                    titles_set.add(title_text)
-                    print(f'  ✅ 新文章: {title_text}')
-                    sleep(1.5)
-                # 本轮所有新文章按日期分组存储
-                if not os.path.exists(JSON_DIR):
-                    os.makedirs(JSON_DIR)
-                if articles_this_round:
-                    save_articles_grouped_by_date(articles_this_round, channel_name)
-                    all_articles.extend(articles_this_round)
-                try:
-                    load_btn = WebDriverWait(driver, 5).until(
-                        EC.element_to_be_clickable((By.XPATH, "//a[contains(@class, 'ps-cursor-pointer') and contains(., 'Load more')]"))
-                    )
-                except:
-                    print("未找到'Load more'按钮，频道可能已加载全部内容")
+        while click_count < max_clicks:
+            print(f"\n--- 第 {click_count + 1} 次加载 ---")
+            html = driver.page_source
+            soup = BeautifulSoup(html, 'html.parser')
+            links = soup.find_all('a', class_='ps-no-underline ps-leading-tight ps-text-blockBlack')
+            urls = []
+            for link in links:
+                if isinstance(link, Tag):
+                    href = link.get('href')
+                    if isinstance(href, str) and href.startswith('http'):
+                        urls.append(href)
+            urls = list(set(urls))
+            new_urls = [u for u in urls if u not in seen_links]
+            print(f'本轮新发现 {len(new_urls)} 个链接')
+            # 批量爬取本轮所有新链接
+            articles_this_round = []
+            for url in new_urls:
+                seen_links.add(url)
+                article_data, title_text, publish_time = crawl_article(url)
+                if not article_data or not title_text:
+                    continue
+                if title_text in titles_set:
+                    print(f'  × 已爬取过: {title_text}')
+                    continue
+                articles_this_round.append(article_data)
+                save_title(title_text)
+                titles_set.add(title_text)
+                print(f'  ✅ 新文章: {title_text}')
+                sleep(1.5)
+            # 本轮所有新文章按日期分组存储
+            if not os.path.exists(JSON_DIR):
+                os.makedirs(JSON_DIR)
+            if articles_this_round:
+                save_articles_grouped_by_date(articles_this_round, channel_name)
+                all_articles.extend(articles_this_round)
+            # 连续5次未检测到Load more才break
+            try:
+                load_btn = WebDriverWait(driver, 5).until(
+                    EC.element_to_be_clickable((By.XPATH, "//a[contains(@class, 'ps-cursor-pointer') and contains(., 'Load more')]"))
+                )
+                no_loadmore_count = 0  # 检测到按钮，重置计数
+            except:
+                no_loadmore_count += 1
+                print(f"未找到'Load more'按钮，累计{no_loadmore_count}次")
+                if no_loadmore_count >= no_loadmore_threshold:
+                    print(f"连续{no_loadmore_threshold}次未检测到'Load more'按钮，频道可能已加载全部内容")
                     break
+                else:
+                    sleep(2)
+                    continue
+            # 点击按钮前先滚动到可见区域，失败重试3次
+            click_success = False
+            for click_attempt in range(3):
                 try:
+                    driver.execute_script("arguments[0].scrollIntoView(true);", load_btn)
+                    sleep(0.5)
                     load_btn.click()
                     click_count += 1
                     print(f"点击'Load more'按钮 ({click_count}/{max_clicks})")
@@ -278,11 +304,16 @@ def crawl_channel(channel_url):
                         sleep(1)
                     except:
                         print("滚动失败，继续处理")
-                except Exception as e:
-                    print(f"点击按钮失败: {str(e)}")
+                    click_success = True
                     break
-        except KeyboardInterrupt:
-            print("\n⚠️ 检测到用户中断（Ctrl+C），正在保存已爬取内容...")
+                except Exception as e:
+                    print(f"点击按钮失败（第{click_attempt+1}次）: {str(e)}")
+                    sleep(1)
+            if not click_success:
+                print(f"连续3次点击'Load more'按钮失败，跳出循环")
+                break
+    except KeyboardInterrupt:
+        print("\n⚠️ 检测到用户中断（Ctrl+C），正在保存已爬取内容...")
     finally:
         # 无论如何都保存一次
         if all_articles:
