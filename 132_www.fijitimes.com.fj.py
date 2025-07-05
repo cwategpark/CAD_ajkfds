@@ -22,6 +22,7 @@ from urllib3.util.retry import Retry
 import warnings
 import logging
 import shutil
+from webdriver_manager.chrome import ChromeDriverManager  # 自动管理ChromeDriver
 
 TXT_FILE = '132_fijitimes.txt'
 JSON_DIR = 'data'
@@ -78,14 +79,8 @@ def safe_filename(s):
     return re.sub(r'[^\w\u4e00-\u9fa5]', '', s)
 
 def cleanup_chrome_temp():
-    """清理Chrome临时目录"""
-    temp_dir = './chrome_temp'
-    if os.path.exists(temp_dir):
-        try:
-            shutil.rmtree(temp_dir)
-            print("🧹 已清理Chrome临时目录")
-        except Exception as e:
-            print(f"⚠️ 清理临时目录失败: {e}")
+    """已废弃，不再使用chrome_temp目录，保留空实现防止调用报错"""
+    pass
 
 def save_articles_grouped_by_date(articles, channel_name):
     """将同一天的文章合并存为一个json文件，所有文件保存在data/下"""
@@ -165,17 +160,13 @@ def crawl_article(url):
             return None, None, None
     return None, None, None
 
-def crawl_channel(channel_url):
+def crawl_channel(channel_url, chromedriver_path=None):
     print(f"\n🌐 启动无头浏览器加载频道: {channel_url}")
     
-    # 1. 自动清理chrome_temp目录，并用绝对路径
-    chrome_temp_dir = os.path.abspath('./chrome_temp')
-    if os.path.exists(chrome_temp_dir):
-        try:
-            shutil.rmtree(chrome_temp_dir)
-        except Exception as e:
-            print(f"无法删除旧的chrome_temp目录: {e}")
-    os.makedirs(chrome_temp_dir, exist_ok=True)
+    # 1. 为每个爬虫实例创建独立的临时目录，避免冲突
+    import uuid
+    unique_temp_dir = os.path.abspath(f'./chrome_temp_{uuid.uuid4().hex[:8]}')
+    os.makedirs(unique_temp_dir, exist_ok=True)
     
     # 2. 配置Chrome选项为无头模式，添加反检测功能
     chrome_options = Options()
@@ -184,6 +175,8 @@ def crawl_channel(channel_url):
     chrome_options.add_argument('--disable-dev-shm-usage')
     chrome_options.add_argument('--disable-gpu')
     chrome_options.add_argument('--window-size=1920,1080')
+    chrome_options.add_argument('--no-first-run')
+    chrome_options.add_argument('--no-default-browser-check')
     chrome_options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
     chrome_options.add_argument('--disable-blink-features=AutomationControlled')
     chrome_options.add_argument('--log-level=3')  # 只显示致命错误
@@ -192,14 +185,35 @@ def crawl_channel(channel_url):
     chrome_options.add_argument('--disable-web-security')  # 禁用Web安全，可能解决SSL问题
     chrome_options.add_argument('--ignore-ssl-errors')  # 忽略SSL错误
     chrome_options.add_argument('--ignore-certificate-errors')  # 忽略证书错误
-    chrome_options.add_argument(f'--user-data-dir={chrome_temp_dir}')  # 使用绝对路径
-    chrome_options.add_argument('--no-first-run')  # 跳过首次运行设置
-    chrome_options.add_argument('--no-default-browser-check')  # 不检查默认浏览器
+    chrome_options.add_argument(f'--user-data-dir={unique_temp_dir}')  # 使用独立临时目录
     chrome_options.add_experimental_option("excludeSwitches", ["enable-automation", "enable-logging"])
     chrome_options.add_experimental_option('useAutomationExtension', False)
     
-    service = Service(log_output=os.devnull)  # 将Chrome日志输出到空设备
-    driver = webdriver.Chrome(options=chrome_options, service=service)
+    # 3. 使用传入的ChromeDriver路径或下载新的
+    try:
+        if chromedriver_path is None:
+            # 只有第一个频道需要下载ChromeDriver
+            chromedriver_path = ChromeDriverManager().install()
+            print(f"webdriver-manager下载/使用的ChromeDriver路径: {chromedriver_path}")
+        else:
+            print(f"复用已下载的ChromeDriver路径: {chromedriver_path}")
+        
+        service = Service(chromedriver_path)
+        driver = webdriver.Chrome(options=chrome_options, service=service)
+        version = driver.capabilities.get('browserVersion') or driver.capabilities.get('version')
+        print(f"当前Selenium调用的Chrome版本: {version}")
+        # 获取并打印ChromeDriver版本
+        chromedriver_version = driver.capabilities.get('chrome', {}).get('chromedriverVersion', '未知')
+        print(f"当前Selenium调用的ChromeDriver版本: {chromedriver_version}")
+    except Exception as e:
+        print(f"ChromeDriver下载或启动失败: {e}")
+        # 清理临时目录
+        if os.path.exists(unique_temp_dir):
+            try:
+                shutil.rmtree(unique_temp_dir)
+            except:
+                pass
+        return
     
     # 执行JavaScript来隐藏自动化特征
     driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
@@ -209,12 +223,39 @@ def crawl_channel(channel_url):
     try:
         driver.get(channel_url)
     except Exception as e:
-        print(f"⚠️ driver.get({channel_url}) 失败: {e}")
-        try:
-            driver.quit()
-        except:
-            pass
-        return
+        print(f'⚠️ driver.get({channel_url}) 失败: {e}')
+        # 重试机制：最多重试3次
+        retry_count = 0
+        max_retries = 3
+        while retry_count < max_retries:
+            retry_count += 1
+            print(f'🔄 重试第{retry_count}次访问频道: {channel_url}')
+            try:
+                sleep(5)  # 等待5秒后重试
+                driver.get(channel_url)
+                print(f'✅ 重试成功，继续爬取')
+                break
+            except Exception as retry_e:
+                print(f'❌ 重试第{retry_count}次失败: {retry_e}')
+                if retry_count >= max_retries:
+                    print(f'⚠️ 连续{max_retries}次访问失败，跳过当前频道')
+                    try:
+                        driver.quit()
+                        print("🔚 浏览器已关闭")
+                    except:
+                        pass
+                    # 清理临时目录和ChromeDriver缓存
+                    try:
+                        if os.path.exists(unique_temp_dir):
+                            shutil.rmtree(unique_temp_dir)
+                            print("🧹 已清理临时目录")
+                        if os.path.exists('./chromedriver_cache'):
+                            shutil.rmtree('./chromedriver_cache')
+                            print("🧹 已清理ChromeDriver缓存目录")
+                    except Exception as cleanup_e:
+                        print(f"⚠️ 清理目录失败: {cleanup_e}")
+                    return
+                continue
     # 等待页面完全加载
     sleep(3)
     
@@ -326,20 +367,79 @@ def crawl_channel(channel_url):
             print("🔚 浏览器已关闭")
         except:
             pass
+        
+        # 清理临时目录和ChromeDriver缓存
+        try:
+            if os.path.exists(unique_temp_dir):
+                shutil.rmtree(unique_temp_dir)
+                print("🧹 已清理临时目录")
+            if os.path.exists('./chromedriver_cache'):
+                shutil.rmtree('./chromedriver_cache')
+                print("🧹 已清理ChromeDriver缓存目录")
+        except Exception as e:
+            print(f"⚠️ 清理目录失败: {e}")
 
 def main():
     print("🎯 Fiji Times 频道逐步爬虫启动")
+    
+    # 先设置webdriver-manager环境变量
+    os.environ['WDM_MIRROR'] = 'https://registry.npmmirror.com/-/binary/chromedriver'
+    os.environ['WDM_CACHE_PATH'] = os.path.abspath('./chromedriver_cache')
+    os.environ['WDM_LOCAL'] = '0'
+    os.environ['WDM_SSL_VERIFY'] = 'false'
+    
     channels = [
         "https://www.fijitimes.com.fj/category/news/business/",
         "https://www.fijitimes.com.fj/category/news/local-news/",
         "https://www.fijitimes.com.fj/category/news/world/"
     ]
+    
+    # 先下载ChromeDriver，供所有频道使用（添加重试机制）
+    chromedriver_path = None
+    max_retries = 3
+    for retry_count in range(max_retries):
+        try:
+            print(f"🔧 正在下载ChromeDriver... (第{retry_count + 1}次尝试)")
+            chromedriver_path = ChromeDriverManager().install()
+            print(f"✅ ChromeDriver下载完成: {chromedriver_path}")
+            break
+        except Exception as e:
+            print(f"❌ ChromeDriver下载失败 (第{retry_count + 1}次): {e}")
+            if retry_count < max_retries - 1:
+                print("🔄 等待5秒后重试...")
+                sleep(5)
+                # 清理可能损坏的缓存
+                try:
+                    if os.path.exists('./chromedriver_cache'):
+                        shutil.rmtree('./chromedriver_cache')
+                        print("🧹 已清理损坏的ChromeDriver缓存")
+                except:
+                    pass
+            else:
+                print(f"❌ 连续{max_retries}次下载失败，程序退出")
+                return
+    
     try:
-        for channel_url in channels:
-            crawl_channel(channel_url)
+        for i, channel_url in enumerate(channels):
+            try:
+                print(f"\n📺 开始爬取第{i+1}个频道: {channel_url}")
+                crawl_channel(channel_url, chromedriver_path)
+            except KeyboardInterrupt:
+                print("\n⚠️ 检测到用户中断（Ctrl+C），程序直接退出")
+                return
         print("\n🎯 所有频道爬取完成！")
+    except KeyboardInterrupt:
+        print("\n⚠️ 检测到用户中断（Ctrl+C），程序直接退出")
+        return
     finally:
         cleanup_chrome_temp()
+        # 清理ChromeDriver缓存目录
+        try:
+            if os.path.exists('./chromedriver_cache'):
+                shutil.rmtree('./chromedriver_cache')
+                print("🧹 已清理ChromeDriver缓存目录")
+        except Exception as e:
+            print(f"⚠️ 清理ChromeDriver缓存失败: {e}")
 
 if __name__ == '__main__':
     main() 
