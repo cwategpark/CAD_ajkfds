@@ -27,6 +27,9 @@ current_channel_articles = []
 current_channel_name = ""
 current_date = ""
 
+# 全局配置data目录
+DATA_DIR = "data"
+
 
 def save_data_on_exit(signal, frame):
     """在程序退出时保存数据的函数"""
@@ -34,9 +37,9 @@ def save_data_on_exit(signal, frame):
         chinese_name = channel_to_chinese[current_channel_name]
         current_time = datetime.now().strftime("%H%M%S")
         output_filename = f"241_{chinese_name}_{current_date}_{current_time}.json"
-        output_path = os.path.join("data", output_filename)
+        output_path = os.path.join(DATA_DIR, output_filename)
 
-        os.makedirs("data", exist_ok=True)
+        os.makedirs(DATA_DIR, exist_ok=True)
 
         with open(output_path, 'w', encoding='utf-8') as json_file:
             json.dump(current_channel_articles, json_file, ensure_ascii=False, indent=4)
@@ -304,7 +307,7 @@ def crawl_channel_for_date(channel_name, date_str):
     save_data_periodically()
 
     logging.info(f"{chinese_name}频道爬取完成 (日期: {date_str})，共爬取 {len(current_channel_articles)} 篇文章")
-    logging.info(f"数据已保存到 data/241_{chinese_name}_{date_str}_*.json\n")
+    logging.info(f"数据已保存到 {DATA_DIR}/241_{chinese_name}_{date_str}_*.json\n")
 
     current_channel_articles = []
 
@@ -316,9 +319,9 @@ def save_data_periodically():
 
         current_time = datetime.now().strftime("%H%M%S")
         output_filename = f"241_{chinese_name}_{current_date}_{current_time}.json"
-        output_path = os.path.join("data", output_filename)
+        output_path = os.path.join(DATA_DIR, output_filename)
 
-        os.makedirs("data", exist_ok=True)
+        os.makedirs(DATA_DIR, exist_ok=True)
 
         with open(output_path, 'w', encoding='utf-8') as json_file:
             json.dump(current_channel_articles, json_file, ensure_ascii=False, indent=4)
@@ -354,7 +357,7 @@ def generate_date_range():
 
 
 def main():
-    os.makedirs("data", exist_ok=True)
+    os.makedirs(DATA_DIR, exist_ok=True)
 
     date_range = generate_date_range()
     logging.info(f"开始爬取日期范围: {len(date_range)} 天 (从2025-01-01到今天)")
