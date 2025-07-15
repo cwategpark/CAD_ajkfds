@@ -40,6 +40,13 @@ def save_data_on_exit(signal, frame):
 
         with open(output_path, 'w', encoding='utf-8') as json_file:
             json.dump(current_channel_articles, json_file, ensure_ascii=False, indent=4)
+        # 写入241_date.txt
+        date_txt_path = "241_date.txt"
+        try:
+            with open(date_txt_path, 'a', encoding='utf-8') as f:
+                f.write(output_filename + '\n')
+        except Exception as e:
+            logging.error(f"写入241_date.txt失败: {e}")
         logging.info(f"\n程序被强制暂停，{chinese_name}频道的数据已保存到 {output_path}")
     sys.exit(0)
 
@@ -315,6 +322,13 @@ def save_data_periodically():
 
         with open(output_path, 'w', encoding='utf-8') as json_file:
             json.dump(current_channel_articles, json_file, ensure_ascii=False, indent=4)
+        # 写入241_date.txt
+        date_txt_path = "241_date.txt"
+        try:
+            with open(date_txt_path, 'a', encoding='utf-8') as f:
+                f.write(output_filename + '\n')
+        except Exception as e:
+            logging.error(f"写入241_date.txt失败: {e}")
         logging.info(f"定期保存数据: {chinese_name}频道的数据已保存到 {output_path}")
 
         save_timer = threading.Timer(300, save_data_periodically)
@@ -348,12 +362,21 @@ def main():
     for channel_name in ["politics", "science", "economic", "sengo"]:
         chinese_name = channel_to_chinese[channel_name]
 
+        # 读取241_date.txt内容
+        date_txt_path = "241_date.txt"
+        if os.path.exists(date_txt_path):
+            with open(date_txt_path, 'r', encoding='utf-8') as f:
+                date_txt_lines = [line.strip() for line in f if line.strip()]
+        else:
+            date_txt_lines = []
+
         for date_str in date_range:
             file_prefix = f"241_{chinese_name}_{date_str}"
-            existing_files = [f for f in os.listdir("data") if f.startswith(file_prefix)]
+            # 判断241_date.txt中是否有以file_prefix开头的行
+            existing_in_txt = any(line.startswith(file_prefix) for line in date_txt_lines)
 
-            if existing_files:
-                logging.info(f"文件已存在: data/{existing_files[0]}，跳过爬取")
+            if existing_in_txt:
+                logging.info(f"241_date.txt已记录: {file_prefix}，跳过爬取")
                 continue
 
             try:
