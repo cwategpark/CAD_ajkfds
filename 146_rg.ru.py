@@ -149,40 +149,109 @@ def download_chromedriver_manual():
         print(f"❌ 手动下载ChromeDriver失败: {e}")
         return None
 
+def get_local_chrome_version():
+    """自动检测本地Chrome主版本号（仅支持Windows）"""
+    import winreg
+    chrome_reg_paths = [
+        r"SOFTWARE\Google\Chrome\BLBeacon",
+        r"SOFTWARE\WOW6432Node\Google\Chrome\BLBeacon"
+    ]
+    for reg_path in chrome_reg_paths:
+        try:
+            reg_key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, reg_path)
+            version, _ = winreg.QueryValueEx(reg_key, "version")
+            winreg.CloseKey(reg_key)
+            return version
+        except:
+            pass
+        try:
+            reg_key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, reg_path)
+            version, _ = winreg.QueryValueEx(reg_key, "version")
+            winreg.CloseKey(reg_key)
+            return version
+        except:
+            pass
+    # 备选：尝试通过chrome.exe --version
+    try:
+        result = subprocess.run([
+            r"C:\Program Files\Google\Chrome\Application\chrome.exe", "--version"
+        ], capture_output=True, text=True, timeout=5)
+        if result.returncode == 0:
+            m = re.search(r"(\d+\.\d+\.\d+\.\d+)", result.stdout)
+            if m:
+                return m.group(1)
+    except:
+        pass
+    return None
+
 def get_chromedriver_path():
-    """获取ChromeDriver路径的多种方案"""
-    
+    """获取ChromeDriver路径，优先自动检测本地Chrome主版本号并下载对应版本"""
     # 方案1: 查找系统中已安装的ChromeDriver
     chromedriver_path = find_chromedriver()
     if chromedriver_path:
         print(f"✅ 找到已安装的ChromeDriver: {chromedriver_path}")
         return chromedriver_path
-    
-    # 方案2: 使用webdriver-manager（如果可用）
+
+    # 方案2: 自动检测本地Chrome主版本号并下载对应版本
     if WEBDRIVER_MANAGER_AVAILABLE:
-        try:
-            print("🔧 尝试使用webdriver-manager下载ChromeDriver...")
-            # 设置环境变量
-            os.environ['WDM_MIRROR'] = 'https://registry.npmmirror.com/-/binary/chromedriver'
-            os.environ['WDM_CACHE_PATH'] = os.path.abspath('./chromedriver_cache')
-            os.environ['WDM_LOCAL'] = '0'
-            os.environ['WDM_SSL_VERIFY'] = 'false'
-            
-            chromedriver_path = ChromeDriverManager().install()
-            print(f"✅ webdriver-manager下载成功: {chromedriver_path}")
-            return chromedriver_path
-        except Exception as e:
-            print(f"❌ webdriver-manager下载失败: {e}")
-    
+        chrome_version = get_local_chrome_version()
+        if chrome_version:
+            main_version = chrome_version.split('.')[0]
+            print(f"🔍 检测到本地Chrome主版本号: {main_version}")
+            sources = [
+                ("默认源", None),
+                ("阿里云", 'https://registry.npmmirror.com/-/binary/chromedriver'),
+                ("清华源", 'https://mirrors.tuna.tsinghua.edu.cn/chromedriver/')
+            ]
+            for name, mirror in sources:
+                try:
+                    print(f"🔧 webdriver-manager尝试下载ChromeDriver（{name}，版本{main_version}）...")
+                    if mirror is None:
+                        os.environ.pop('WDM_MIRROR', None)
+                    else:
+                        os.environ['WDM_MIRROR'] = mirror
+                    os.environ['WDM_CACHE_PATH'] = os.path.abspath('./chromedriver_cache')
+                    os.environ['WDM_LOCAL'] = '0'
+                    os.environ['WDM_SSL_VERIFY'] = 'false'
+                    chromedriver_path = ChromeDriverManager(driver_version=main_version).install()
+                    print(f"✅ webdriver-manager（{name}）下载成功: {chromedriver_path}")
+                    return chromedriver_path
+                except Exception as e:
+                    print(f"❌ webdriver-manager（{name}）下载失败: {e}")
+        else:
+            print("⚠️ 未能自动检测到本地Chrome版本，尝试通用方式下载...")
+            # 继续后续逻辑
+        # 兼容原有逻辑：尝试不指定版本的三源
+        sources = [
+            ("默认源", None),
+            ("阿里云", 'https://registry.npmmirror.com/-/binary/chromedriver'),
+            ("清华源", 'https://mirrors.tuna.tsinghua.edu.cn/chromedriver/')
+        ]
+        for name, mirror in sources:
+            try:
+                print(f"🔧 尝试使用webdriver-manager下载ChromeDriver（{name}）...")
+                if mirror is None:
+                    os.environ.pop('WDM_MIRROR', None)
+                else:
+                    os.environ['WDM_MIRROR'] = mirror
+                os.environ['WDM_CACHE_PATH'] = os.path.abspath('./chromedriver_cache')
+                os.environ['WDM_LOCAL'] = '0'
+                os.environ['WDM_SSL_VERIFY'] = 'false'
+                chromedriver_path = ChromeDriverManager().install()
+                print(f"✅ webdriver-manager（{name}）下载成功: {chromedriver_path}")
+                return chromedriver_path
+            except Exception as e:
+                print(f"❌ webdriver-manager（{name}）下载失败: {e}")
+
     # 方案3: 手动下载
     print("🔧 尝试手动下载ChromeDriver...")
     chromedriver_path = download_chromedriver_manual()
     if chromedriver_path:
         print(f"✅ 手动下载成功: {chromedriver_path}")
         return chromedriver_path
-    
+
     # 方案4: 提示用户手动安装
-    print("❌ 无法自动获取ChromeDriver")
+    print("❌ 无法自动获取ChromeDriver（已尝试自动检测版本、默认源、阿里云、清华源和手动下载）")
     print("请手动下载ChromeDriver并放置在以下位置之一:")
     if platform.system() == "Windows":
         print("- 当前目录下的chromedriver.exe")
@@ -192,7 +261,6 @@ def get_chromedriver_path():
         print("- 当前目录下的chromedriver")
         print("- /usr/local/bin/chromedriver")
         print("- 添加到系统PATH环境变量")
-    
     return None
 
 def load_titles():
@@ -281,7 +349,7 @@ def save_articles_grouped_by_date(articles, channel_name):
         # 将4位年份缩短为2位年份
         if len(pt) == 8 and pt.isdigit():  # 确保是8位数字格式
             pt = pt[2:]  # 去掉前两位年份，只保留后两位
-        filename = f'rg_ru_{cat}_{pt}_{now_str}.json'
+        filename = f'146_{cat}_{pt}_{now_str}.json'
         filepath = os.path.join(JSON_DIR, filename)
         try:
             with open(filepath, 'w', encoding='utf-8') as f:
@@ -290,7 +358,7 @@ def save_articles_grouped_by_date(articles, channel_name):
         except Exception as e:
             print(f'❌ 保存文件失败: {filepath}, 错误: {str(e)}')
             # 尝试使用备用文件名
-            backup_filename = f'rg_ru_{cat}_backup_{now_str}.json'
+            backup_filename = f'146_{cat}_backup_{now_str}.json'
             backup_filepath = os.path.join(JSON_DIR, backup_filename)
             try:
                 with open(backup_filepath, 'w', encoding='utf-8') as f:
@@ -556,14 +624,12 @@ def extract_article_links_from_page(soup, base_url):
 
 def crawl_channel(channel_url, driver=None, unique_temp_dir=None, chromedriver_path=None):
     print(f"\n🌐 加载频道: {channel_url}")
-    
-    # 如果是第一次调用，创建浏览器实例
+    # 只在driver为None时才创建新实例，否则始终复用
     if driver is None:
         print("🔧 创建新的浏览器实例...")
         import uuid
         unique_temp_dir = os.path.abspath(f'./chrome_temp_{uuid.uuid4().hex[:8]}')
         os.makedirs(unique_temp_dir, exist_ok=True)
-        
         chrome_options = Options()
         chrome_options.add_argument('--headless=new')
         chrome_options.add_argument('--no-sandbox')
@@ -575,7 +641,6 @@ def crawl_channel(channel_url, driver=None, unique_temp_dir=None, chromedriver_p
         chrome_options.add_argument(f'--user-data-dir={unique_temp_dir}')
         chrome_options.add_experimental_option("excludeSwitches", ["enable-automation", "enable-logging"])
         chrome_options.add_experimental_option('useAutomationExtension', False)
-        
         try:
             if chromedriver_path is None:
                 chromedriver_path = get_chromedriver_path()
@@ -594,7 +659,7 @@ def crawl_channel(channel_url, driver=None, unique_temp_dir=None, chromedriver_p
             return None, None
     else:
         print("♻️ 复用现有浏览器实例...")
-    
+        # 复用时不再更换unique_temp_dir
     driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
     
     try:
@@ -887,7 +952,7 @@ def main():
                 pass
         return
     finally:
-        # 确保浏览器被关闭
+        # 确保浏览器被关闭（只在所有频道后关闭）
         if driver:
             try:
                 driver.quit()
@@ -909,61 +974,6 @@ def main():
         except Exception as e:
             print(f"⚠️ 清理ChromeDriver缓存失败: {e}")
 
-def test_save_function():
-    """测试保存功能"""
-    print("🧪 测试保存功能...")
-    
-    # 创建测试文章
-    test_articles = [
-        {
-            "title": "测试文章1",
-            "content": "这是测试内容1",
-            "sources": {
-                "current_site": "俄罗斯报",
-                "current_siteurl": "rg.ru",
-                "origin_url": "https://rg.ru/test1.html"
-            },
-            "metadata": {
-                "publish_time": "2025-07-07 16:00:00",
-                "authors": "测试作者",
-                "category": "政府"
-            },
-            "crawlingtime": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        },
-        {
-            "title": "测试文章2",
-            "content": "这是测试内容2",
-            "sources": {
-                "current_site": "俄罗斯报",
-                "current_siteurl": "rg.ru",
-                "origin_url": "https://rg.ru/test2.html"
-            },
-            "metadata": {
-                "publish_time": "2025-07-08",
-                "authors": "测试作者2",
-                "category": "政府"
-            },
-            "crawlingtime": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        }
-    ]
-    
-    try:
-        save_articles_grouped_by_date(test_articles, "政府")
-        print("✅ 测试保存功能成功")
-        
-        # 检查文件是否创建
-        if os.path.exists(JSON_DIR):
-            files = os.listdir(JSON_DIR)
-            print(f"📁 data目录中的文件: {files}")
-        else:
-            print("❌ data目录不存在")
-            
-    except Exception as e:
-        print(f"❌ 测试保存功能失败: {str(e)}")
-
 if __name__ == '__main__':
-    # 测试保存功能
-    test_save_function()
-    
     # 运行主程序
     main() 
