@@ -351,6 +351,12 @@ def save_articles_grouped_by_date(articles, channel_name):
             pt = pt[2:]  # 去掉前两位年份，只保留后两位
         filename = f'146_{cat}_{pt}_{now_str}.json'
         filepath = os.path.join(JSON_DIR, filename)
+
+        # 修正：全部覆盖category字段为cat
+        for art in arts:
+            if 'metadata' in art:
+                art['metadata']['category'] = cat
+
         try:
             with open(filepath, 'w', encoding='utf-8') as f:
                 json.dump(arts, f, ensure_ascii=False, indent=2)
