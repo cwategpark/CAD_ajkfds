@@ -442,4 +442,16 @@ def main():
             print(f"⚠️ 清理ChromeDriver缓存失败: {e}")
 
 if __name__ == '__main__':
-    main() 
+    while True:
+        try:
+            main()
+        except KeyboardInterrupt:
+            print("检测到手动关闭，程序退出。")
+            break
+        except Exception as e:
+            print(f"爬虫异常中断，自动重启。异常信息: {e}")
+            import traceback
+            traceback.print_exc()
+            print("3秒后自动重启...")
+            from time import sleep
+            sleep(3) 
