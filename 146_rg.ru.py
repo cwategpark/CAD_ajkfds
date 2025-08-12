@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-RG.ru 爬虫 - 带定时重启功能
+RG.ru 爬虫 - 带异常中断重启功能
 """
 import requests
 from bs4 import BeautifulSoup, Tag
@@ -25,6 +25,7 @@ import platform
 import random
 import traceback
 import time
+import glob
 
 # 尝试导入webdriver_manager，如果失败则使用备用方案
 try:
@@ -52,6 +53,11 @@ MONTH_MAP = {
     'янв': '01', 'фев': '02', 'мар': '03', 'апр': '04', 'июн': '06', 'июл': '07', 'авг': '08', 'сен': '09', 'окт': '10',
     'ноя': '11', 'дек': '12'
 }
+
+# 异常计数器
+exception_count = 0
+MAX_EXCEPTION_RETRY = 5
+EXCEPTION_COOLDOWN = 60  # 异常后冷却时间（秒）
 
 
 def find_chromedriver():
@@ -963,6 +969,15 @@ def crawl_channel(channel_url, driver=None, unique_temp_dir=None, chromedriver_p
         else:
             print("\n✅ 所有文章已在每轮中保存到JSON文件，无需额外保存")
         raise
+    except Exception as e:
+        print(f"\n❌ 频道爬取过程中发生异常: {str(e)}")
+        traceback.print_exc()
+        # 检查是否有未保存的文章
+        if all_articles:
+            print(f"\n⚠️ 尝试保存已爬取的{len(all_articles)}篇文章...")
+            save_articles_grouped_by_date(all_articles, channel_name)
+        # 返回driver和unique_temp_dir供后续使用
+        return driver, unique_temp_dir
     finally:
         print(f"\n📊 频道爬取完成统计:")
         print(f"  - 总文章数: {len(all_articles)}")
@@ -1006,21 +1021,11 @@ def run_crawler():
                 if driver is None:
                     print("❌ 浏览器启动失败，跳过后续频道")
                     break
-            except KeyboardInterrupt:
-                print("\n⚠️ 检测到用户中断（Ctrl+C），正在清理资源...")
-                if driver:
-                    try:
-                        driver.quit()
-                        print("🔚 浏览器已关闭")
-                    except:
-                        pass
-                if unique_temp_dir and os.path.exists(unique_temp_dir):
-                    try:
-                        shutil.rmtree(unique_temp_dir)
-                        print("🧹 已清理临时目录")
-                    except:
-                        pass
-                return
+            except Exception as e:
+                print(f"❌ 爬取频道 {channel_url} 时发生异常: {str(e)}")
+                traceback.print_exc()
+                # 继续下一个频道
+                continue
         print("\n🎯 所有频道爬取完成！")
     except KeyboardInterrupt:
         print("\n⚠️ 检测到用户中断（Ctrl+C），正在清理资源...")
@@ -1037,6 +1042,9 @@ def run_crawler():
             except:
                 pass
         return
+    except Exception as e:
+        print(f"❌ 爬虫运行过程中发生异常: {str(e)}")
+        traceback.print_exc()
     finally:
         # 确保浏览器被关闭（只在所有频道后关闭）
         if driver:
@@ -1071,6 +1079,8 @@ def calculate_next_run():
 
 
 def main():
+    global exception_count
+
     # 首次运行计数器
     first_run = True
 
@@ -1080,6 +1090,8 @@ def main():
                 print("🚀 首次运行：立即启动爬虫")
                 run_crawler()
                 first_run = False
+                # 重置异常计数器
+                exception_count = 0
             else:
                 # 计算下一次运行时间
                 next_run_time = calculate_next_run()
@@ -1107,19 +1119,38 @@ def main():
 
                     print("\n⏰ 到达预定时间，启动爬虫")
                     run_crawler()
+                    # 成功运行后重置异常计数器
+                    exception_count = 0
                 else:
                     print("⚠️ 等待时间为负，立即启动爬虫")
                     run_crawler()
+                    # 成功运行后重置异常计数器
+                    exception_count = 0
 
         except KeyboardInterrupt:
             print("\n👋 用户中断程序，退出")
             break
 
         except Exception as e:
-            print(f"\n❌ 发生未捕获的异常: {str(e)}")
+            exception_count += 1
+            print(f"\n❌ 发生未捕获的异常 (第 {exception_count} 次): {str(e)}")
             traceback.print_exc()
-            print("🔄 5秒后重启爬虫...")
-            sleep(5)
+
+            # 检查是否达到最大异常重试次数
+            if exception_count >= MAX_EXCEPTION_RETRY:
+                print(f"❌ 已达到最大异常重试次数 ({MAX_EXCEPTION_RETRY})，程序退出")
+                break
+
+            # 计算冷却时间（随异常次数增加）
+            cooldown = EXCEPTION_COOLDOWN * exception_count
+            print(f"🔄 {cooldown}秒后重启爬虫...")
+
+            # 带倒计时的冷却等待
+            while cooldown > 0:
+                print(f"  冷却倒计时: {cooldown}秒", end='\r')
+                sleep(1)
+                cooldown -= 1
+            print("\n🔄 冷却结束，重启爬虫")
 
 
 if __name__ == '__main__':
