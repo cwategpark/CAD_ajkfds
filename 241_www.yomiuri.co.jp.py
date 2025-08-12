@@ -10,7 +10,6 @@ import os
 from datetime import timezone
 import threading
 
-
 # 配置日志
 logging.basicConfig(
     level=logging.INFO,
@@ -29,6 +28,14 @@ current_date = ""
 
 # 全局配置data目录
 DATA_DIR = "data"
+
+# 添加全局状态跟踪变量
+crawler_state = {
+    "running": True,
+    "force_restart": False,
+    "last_channel": None,
+    "last_date": None
+}
 
 
 def save_data_on_exit(signal, frame):
@@ -57,7 +64,6 @@ def save_data_on_exit(signal, frame):
 signal.signal(signal.SIGINT, save_data_on_exit)
 signal.signal(signal.SIGTERM, save_data_on_exit)
 
-
 channel_dict = {
     "politics": {
         "sub_channels": ["election/togisen/", "election/sangiin/", "election/shugiin/", "election/tochijisen/",
@@ -80,14 +86,12 @@ channel_dict = {
     },
 }
 
-
 channel_to_chinese = {
     "politics": "政治",
     "science": "科学",
     "economic": "经济",
     "sengo": "历史"
 }
-
 
 session = requests.Session()
 session.headers.update({
@@ -172,7 +176,8 @@ def crawl_single_path(path, articles, channel_name, date_str):
                     break
 
             if not paragraphs:
-                content_div = soup.find('div', class_='article-body') or soup.find('article') or soup.find('div', class_='content')
+                content_div = soup.find('div', class_='article-body') or soup.find('article') or soup.find('div',
+                                                                                                           class_='content')
                 if content_div:
                     paragraphs = [p.get_text(strip=True) for p in content_div.find_all('p') if p.get_text(strip=True)]
 
@@ -356,7 +361,8 @@ def generate_date_range():
     return date_list[::-1]
 
 
-def main():
+def run_crawler():
+    """执行爬虫任务的函数"""
     os.makedirs(DATA_DIR, exist_ok=True)
 
     date_range = generate_date_range()
@@ -374,6 +380,11 @@ def main():
             date_txt_lines = []
 
         for date_str in date_range:
+            # 检查是否需要强制重启
+            if crawler_state["force_restart"]:
+                crawler_state["force_restart"] = False
+                logging.info("检测到重启请求，继续爬取任务...")
+
             file_prefix = f"241_{chinese_name}_{date_str}"
             # 判断241_date.txt中是否有以file_prefix开头的行
             existing_in_txt = any(line.startswith(file_prefix) for line in date_txt_lines)
@@ -383,11 +394,59 @@ def main():
                 continue
 
             try:
+                # 更新当前爬取状态
+                crawler_state["last_channel"] = channel_name
+                crawler_state["last_date"] = date_str
+
                 crawl_channel_for_date(channel_name, date_str)
             except Exception as e:
                 logging.error(f"爬取 {chinese_name} 频道 (日期: {date_str}) 时发生错误: {e}")
+                # 标记需要重启
+                crawler_state["force_restart"] = True
+                # 保存当前状态
+                crawler_state["last_channel"] = channel_name
+                crawler_state["last_date"] = date_str
+                raise  # 重新抛出异常，由外层处理
 
             time.sleep(10)
+
+
+def calculate_next_run():
+    """计算下一次运行的时间（第二天早上6点）"""
+    now = datetime.now()
+    # 如果当前时间早于今天6点，则使用今天6点
+    if now.hour < 6:
+        next_run = now.replace(hour=6, minute=0, second=0, microsecond=0)
+    else:
+        # 否则使用明天6点
+        next_run = (now + timedelta(days=1)).replace(hour=6, minute=0, second=0, microsecond=0)
+
+    sleep_seconds = (next_run - now).total_seconds()
+    return sleep_seconds
+
+
+def main():
+    """主函数，添加了重启和定时功能"""
+    # 首次启动立即运行
+    logging.info("首次启动，立即运行爬虫任务")
+
+    while crawler_state["running"]:
+        try:
+            run_crawler()
+            logging.info("爬虫任务完成，等待下一次运行...")
+
+            # 计算到第二天6点的休眠时间
+            sleep_time = calculate_next_run()
+            logging.info(f"休眠 {sleep_time / 3600:.2f} 小时，直到第二天早上6点")
+            time.sleep(sleep_time)
+
+        except Exception as e:
+            logging.error(f"爬虫发生未捕获的异常: {e}")
+            logging.info("5秒后尝试重启爬虫...")
+            time.sleep(5)
+
+            # 重置状态以继续
+            crawler_state["force_restart"] = True
 
 
 if __name__ == "__main__":
