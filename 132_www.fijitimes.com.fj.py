@@ -27,17 +27,23 @@ from webdriver_manager.chrome import ChromeDriverManager  # 自动管理ChromeDr
 TXT_FILE = '132_fijitimes.txt'
 JSON_DIR = 'data'
 
+# 记录上一次输出 JSON 文件的日期
+last_json_date = None
+
 # 抑制警告和错误输出
 warnings.filterwarnings("ignore")
 logging.getLogger("selenium").setLevel(logging.ERROR)
 logging.getLogger("urllib3").setLevel(logging.ERROR)
 logging.getLogger("requests").setLevel(logging.ERROR)
 
+# 改成小写月份映射，支持大小写不一致的输入
 MONTH_MAP = {
-    'January': '01', 'February': '02', 'March': '03', 'April': '04', 'May': '05', 'June': '06',
-    'July': '07', 'August': '08', 'September': '09', 'October': '10', 'November': '11', 'December': '12',
-    'Jan': '01', 'Feb': '02', 'Mar': '03', 'Apr': '04', 'Jun': '06', 'Jul': '07', 'Aug': '08', 'Sep': '09', 'Oct': '10', 'Nov': '11', 'Dec': '12'
+    'january': '01', 'february': '02', 'march': '03', 'april': '04', 'may': '05', 'june': '06',
+    'july': '07', 'august': '08', 'september': '09', 'october': '10', 'november': '11', 'december': '12',
+    'jan': '01', 'feb': '02', 'mar': '03', 'apr': '04', 'jun': '06', 'jul': '07', 'aug': '08',
+    'sep': '09', 'oct': '10', 'nov': '11', 'dec': '12'
 }
+
 
 def load_titles():
     if not os.path.exists(TXT_FILE):
@@ -45,45 +51,81 @@ def load_titles():
     with open(TXT_FILE, 'r', encoding='utf-8') as f:
         return set(line.strip() for line in f if line.strip())
 
+
 def save_title(title):
     with open(TXT_FILE, 'a', encoding='utf-8') as f:
         f.write(title + '\n')
 
-def safe_publish_time(publish_time):
+
+def safe_publish_time(publish_time: str) -> str:
+    global last_json_date
+    publish_time = publish_time.strip()
     today = datetime.now()
-    m = re.search(r'Published: (\d+) hours? ago', publish_time)
-    if m:
+
+    # minutes ago / just now
+    if re.search(r'(\d+)\s+minutes?\s+ago', publish_time, re.IGNORECASE) or \
+            re.search(r'just\s+now', publish_time, re.IGNORECASE):
         return today.strftime('%Y-%m-%d')
-    m = re.search(r'Published: (\d+) days? ago', publish_time)
+
+    # hours ago
+    if re.search(r'(\d+)\s+hours?\s+ago', publish_time, re.IGNORECASE):
+        return today.strftime('%Y-%m-%d')
+
+    # days ago
+    m = re.search(r'(\d+)\s+days?\s+ago', publish_time, re.IGNORECASE)
     if m:
-        days = int(m.group(1))
-        dt = today - timedelta(days=days)
-        return dt.strftime('%Y-%m-%d')
-    m = re.search(r'Published: (\d+) weeks? ago', publish_time)
+        return (today - timedelta(days=int(m.group(1)))).strftime('%Y-%m-%d')
+
+    # weeks ago
+    m = re.search(r'(\d+)\s+weeks?\s+ago', publish_time, re.IGNORECASE)
     if m:
-        weeks = int(m.group(1))
-        dt = today - timedelta(days=weeks*7)
-        return dt.strftime('%Y-%m-%d')
-    m = re.search(r'Published: ([A-Za-z]+) (\d{1,2}), (\d{4})', publish_time)
+        return (today - timedelta(days=int(m.group(1)) * 7)).strftime('%Y-%m-%d')
+
+    # Month DD, YYYY
+    m = re.search(r'([A-Za-z]+)\s+(\d{1,2}),\s*(\d{4})', publish_time, re.IGNORECASE)
     if m:
-        month = MONTH_MAP.get(m.group(1), '01')
+        month_str = m.group(1).lower()
+        month = MONTH_MAP.get(month_str, '01')
         day = m.group(2).zfill(2)
         year = m.group(3)
         return f'{year}-{month}-{day}'
+
+    # YYYY-MM-DD / YYYY/MM/DD / YYYYMMDD
+    for fmt in ('%Y-%m-%d', '%Y/%m/%d', '%Y%m%d'):
+        try:
+            return datetime.strptime(publish_time, fmt).strftime('%Y-%m-%d')
+        except ValueError:
+            pass
+
+    # 从字符串提取纯数字日期
     pt = ''.join(filter(str.isdigit, publish_time))
     if len(pt) == 8:
         return f'{pt[:4]}-{pt[4:6]}-{pt[6:]}'
-    return 'unknown'
+
+    # 如果都识别不了 → 用上一次 JSON 日期 - 1 天
+    if last_json_date:
+        try:
+            prev_date = datetime.strptime(last_json_date, '%Y-%m-%d') - timedelta(days=1)
+            return prev_date.strftime('%Y-%m-%d')
+        except:
+            pass
+
+    # 如果第一次就失败 → 用今天
+    return today.strftime('%Y-%m-%d')
+
 
 def safe_filename(s):
     return re.sub(r'[^\w\u4e00-\u9fa5]', '', s)
+
 
 def cleanup_chrome_temp():
     """已废弃，不再使用chrome_temp目录，保留空实现防止调用报错"""
     pass
 
+
 def save_articles_grouped_by_date(articles, channel_name):
     """将同一天的文章合并存为一个json文件，所有文件保存在data/下"""
+    global last_json_date
     from collections import defaultdict
     grouped = defaultdict(list)
     for art in articles:
@@ -98,6 +140,8 @@ def save_articles_grouped_by_date(articles, channel_name):
         with open(filepath, 'w', encoding='utf-8') as f:
             json.dump(arts, f, ensure_ascii=False, indent=2)
         print(f'💾 已保存{len(arts)}篇文章到 {filepath}')
+        last_json_date = date_str  # 保存这次的日期
+
 
 def crawl_article(url):
     headers = {
@@ -113,11 +157,13 @@ def crawl_article(url):
                 print(f"  × 未找到标题元素")
                 return None, None, None
             title_text = title_elem.get_text(strip=True)
-            content_elem = soup.find('div', class_='entry-content post_content wp-block-post-content is-layout-flow wp-block-post-content-is-layout-flow')
+            content_elem = soup.find('div',
+                                     class_='entry-content post_content wp-block-post-content is-layout-flow wp-block-post-content-is-layout-flow')
             if not (isinstance(content_elem, Tag)):
                 print(f"  × 未找到内容元素")
                 return None, None, None
-            content = '\n'.join([p.get_text(strip=True) for p in content_elem.find_all('p') if isinstance(p, Tag) and p.get_text(strip=True)])
+            content = '\n'.join([p.get_text(strip=True) for p in content_elem.find_all('p') if
+                                 isinstance(p, Tag) and p.get_text(strip=True)])
             info_elem = soup.find('div', class_='fijitimes_post__info')
             publish_time, authors = '', ''
             if isinstance(info_elem, Tag):
@@ -152,7 +198,7 @@ def crawl_article(url):
             }
             return article_data, title_text, publish_time
         except requests.exceptions.SSLError as e:
-            print(f"  × SSL错误，重试第{attempt+1}次: {url}")
+            print(f"  × SSL错误，重试第{attempt + 1}次: {url}")
             sleep(2)
             continue
         except Exception as e:
@@ -160,14 +206,15 @@ def crawl_article(url):
             return None, None, None
     return None, None, None
 
+
 def crawl_channel(channel_url, chromedriver_path=None):
     print(f"\n🌐 启动无头浏览器加载频道: {channel_url}")
-    
+
     # 1. 为每个爬虫实例创建独立的临时目录，避免冲突
     import uuid
     unique_temp_dir = os.path.abspath(f'./chrome_temp_{uuid.uuid4().hex[:8]}')
     os.makedirs(unique_temp_dir, exist_ok=True)
-    
+
     # 2. 配置Chrome选项为无头模式，添加反检测功能
     chrome_options = Options()
     chrome_options.add_argument('--headless=new')  # 使用新版无头模式
@@ -177,7 +224,8 @@ def crawl_channel(channel_url, chromedriver_path=None):
     chrome_options.add_argument('--window-size=1920,1080')
     chrome_options.add_argument('--no-first-run')
     chrome_options.add_argument('--no-default-browser-check')
-    chrome_options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
+    chrome_options.add_argument(
+        '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
     chrome_options.add_argument('--disable-blink-features=AutomationControlled')
     chrome_options.add_argument('--log-level=3')  # 只显示致命错误
     chrome_options.add_argument('--silent')  # 静默模式
@@ -188,7 +236,7 @@ def crawl_channel(channel_url, chromedriver_path=None):
     chrome_options.add_argument(f'--user-data-dir={unique_temp_dir}')  # 使用独立临时目录
     chrome_options.add_experimental_option("excludeSwitches", ["enable-automation", "enable-logging"])
     chrome_options.add_experimental_option('useAutomationExtension', False)
-    
+
     # 3. 使用传入的ChromeDriver路径或下载新的
     try:
         if chromedriver_path is None:
@@ -197,7 +245,7 @@ def crawl_channel(channel_url, chromedriver_path=None):
             print(f"webdriver-manager下载/使用的ChromeDriver路径: {chromedriver_path}")
         else:
             print(f"复用已下载的ChromeDriver路径: {chromedriver_path}")
-        
+
         service = Service(chromedriver_path)
         driver = webdriver.Chrome(options=chrome_options, service=service)
         version = driver.capabilities.get('browserVersion') or driver.capabilities.get('version')
@@ -214,12 +262,12 @@ def crawl_channel(channel_url, chromedriver_path=None):
             except:
                 pass
         return
-    
+
     # 执行JavaScript来隐藏自动化特征
     driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
     driver.execute_script("Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]})")
     driver.execute_script("Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']})")
-    
+
     try:
         driver.get(channel_url)
     except Exception as e:
@@ -258,7 +306,7 @@ def crawl_channel(channel_url, chromedriver_path=None):
                 continue
     # 等待页面完全加载
     sleep(3)
-    
+
     max_clicks = 100
     click_count = 0
     seen_links = set()
@@ -273,7 +321,7 @@ def crawl_channel(channel_url, chromedriver_path=None):
         channel_name = '经济'
     else:
         channel_name = '未知频道'
-    
+
     # 用于中断保存的变量
     all_articles = []
     no_loadmore_count = 0  # 连续未检测到Load more按钮的计数器
@@ -317,7 +365,8 @@ def crawl_channel(channel_url, chromedriver_path=None):
             # 连续5次未检测到Load more才break
             try:
                 load_btn = WebDriverWait(driver, 5).until(
-                    EC.element_to_be_clickable((By.XPATH, "//a[contains(@class, 'ps-cursor-pointer') and contains(., 'Load more')]"))
+                    EC.element_to_be_clickable(
+                        (By.XPATH, "//a[contains(@class, 'ps-cursor-pointer') and contains(., 'Load more')]"))
                 )
                 no_loadmore_count = 0  # 检测到按钮，重置计数
             except:
@@ -348,7 +397,7 @@ def crawl_channel(channel_url, chromedriver_path=None):
                     click_success = True
                     break
                 except Exception as e:
-                    print(f"点击按钮失败（第{click_attempt+1}次）: {str(e)}")
+                    print(f"点击按钮失败（第{click_attempt + 1}次）: {str(e)}")
                     sleep(1)
             if not click_success:
                 print(f"连续3次点击'Load more'按钮失败，跳出循环")
@@ -367,7 +416,7 @@ def crawl_channel(channel_url, chromedriver_path=None):
             print("🔚 浏览器已关闭")
         except:
             pass
-        
+
         # 清理临时目录和ChromeDriver缓存
         try:
             if os.path.exists(unique_temp_dir):
@@ -379,21 +428,22 @@ def crawl_channel(channel_url, chromedriver_path=None):
         except Exception as e:
             print(f"⚠️ 清理目录失败: {e}")
 
+
 def main():
     print("🎯 Fiji Times 频道逐步爬虫启动")
-    
+
     # 先设置webdriver-manager环境变量
     os.environ['WDM_MIRROR'] = 'https://registry.npmmirror.com/-/binary/chromedriver'
     os.environ['WDM_CACHE_PATH'] = os.path.abspath('./chromedriver_cache')
     os.environ['WDM_LOCAL'] = '0'
     os.environ['WDM_SSL_VERIFY'] = 'false'
-    
+
     channels = [
         "https://www.fijitimes.com.fj/category/news/business/",
         "https://www.fijitimes.com.fj/category/news/local-news/",
         "https://www.fijitimes.com.fj/category/news/world/"
     ]
-    
+
     # 先下载ChromeDriver，供所有频道使用（添加重试机制）
     chromedriver_path = None
     max_retries = 3
@@ -418,11 +468,11 @@ def main():
             else:
                 print(f"❌ 连续{max_retries}次下载失败，程序退出")
                 return
-    
+
     try:
         for i, channel_url in enumerate(channels):
             try:
-                print(f"\n📺 开始爬取第{i+1}个频道: {channel_url}")
+                print(f"\n📺 开始爬取第{i + 1}个频道: {channel_url}")
                 crawl_channel(channel_url, chromedriver_path)
             except KeyboardInterrupt:
                 print("\n⚠️ 检测到用户中断（Ctrl+C），程序直接退出")
@@ -441,17 +491,36 @@ def main():
         except Exception as e:
             print(f"⚠️ 清理ChromeDriver缓存失败: {e}")
 
+
 if __name__ == '__main__':
+    from time import sleep
+    import traceback
+
+
+    def wait_until_next_6am():
+        """等待到第二天早上 6:00"""
+        now = datetime.now()
+        target_time = now.replace(hour=6, minute=0, second=0, microsecond=0)
+        if now >= target_time:
+            target_time += timedelta(days=1)
+        wait_seconds = (target_time - now).total_seconds()
+        print(f"⏳ 等待到 {target_time.strftime('%Y-%m-%d %H:%M:%S')} 再启动，剩余 {int(wait_seconds)} 秒")
+        sleep(wait_seconds)
+
+
     while True:
         try:
+            # 每次循环立刻运行爬虫
             main()
+
+            print("✅ 爬取完成，等待下一次启动")
+            wait_until_next_6am()
+
         except KeyboardInterrupt:
             print("检测到手动关闭，程序退出。")
             break
         except Exception as e:
             print(f"爬虫异常中断，自动重启。异常信息: {e}")
-            import traceback
             traceback.print_exc()
             print("3秒后自动重启...")
-            from time import sleep
-            sleep(3) 
+            sleep(3)
